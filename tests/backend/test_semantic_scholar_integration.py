@@ -5,10 +5,10 @@ from app.config import Settings
 from app.providers.semantic_scholar import SemanticScholarProvider
 
 
-@pytest.mark.integration
+@pytest.mark.external
 @pytest.mark.skipif(
-    os.getenv("RUN_LIVE_SEMANTIC_SCHOLAR_TESTS") != "1",
-    reason="Set RUN_LIVE_SEMANTIC_SCHOLAR_TESTS=1 to call the live API",
+    os.getenv("RUN_EXTERNAL_RESEARCH_TESTS") != "1",
+    reason="Set RUN_EXTERNAL_RESEARCH_TESTS=1 to call the live API",
 )
 @pytest.mark.asyncio
 async def test_live_semantic_scholar_resolves_known_paper() -> None:

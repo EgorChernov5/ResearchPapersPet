@@ -36,7 +36,8 @@ asyncio_mode = "auto"
 pythonpath = ["backend"]
 testpaths = ["tests"]
 markers = [
-    "integration: tests that call external services and require explicit opt-in",
+    "service_integration: tests that require real local Docker services",
+    "external: tests that call external services and require explicit opt-in",
 ]
 
 [tool.ruff]

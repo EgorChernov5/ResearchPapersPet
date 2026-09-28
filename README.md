@@ -153,6 +153,21 @@ GET /projects/{project_id}/graph
 `papers`, `ranking` и `graph` поддерживают filters по topic/final score, year, citations,
 depth, category и seed status. Upload использует `multipart/form-data`, поле файла — `file`.
 
+Конфигурация проекта принимает следующие параметры discovery и подготовки PDF:
+
+| Поле | Default | Семантика |
+|---|---:|---|
+| `max_depth` | `2` | Число уровней citation discovery, допустимо `1–5` |
+| `max_papers` | `300` | Жёсткий лимит всех project papers, включая seeds |
+| `top_k_expansion` | `20` | Глобальный лимит выбранных статей одного уровня |
+| `expand_references_topic_threshold` | `0.75` | Минимальный preliminary score для раскрытия references discovered paper |
+| `pdf_top_n` | `20` | Число discovered PDF targets; seeds в лимит не входят |
+| `allow_manual_pdf_upload` | `false` | Разрешает будущий manual fallback для недоступных PDF |
+
+После добавления вопросов `top_k_expansion` должен быть не меньше их общего числа. Это позволяет
+последующему сбалансированному selector представить каждый research question. Старые проекты, в
+JSON-конфигурации которых новых полей нет, получают указанные defaults при чтении.
+
 ## Frontend
 
 Для локального запуска сначала запустите API и worker, затем откройте отдельный терминал:
@@ -187,7 +202,7 @@ repositories и pipeline используют изолированную in-memo
 API fixture использует in-memory database и mock Redis, поэтому не запускает worker.
 
 ```powershell
-uv run pytest
+uv run pytest -m "not service_integration and not external"
 ```
 
 ```powershell

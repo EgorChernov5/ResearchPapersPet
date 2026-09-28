@@ -26,6 +26,26 @@ topic_score + impact_score + graph_score ────────── final_sc
 Статья и каждый вопрос кодируются одной Sentence Transformers-моделью. Для статьи входной
 текст имеет вид `{title} [SEP] {abstract}`. При отсутствии abstract используется только title.
 
+## Preliminary и final scoring
+
+Preliminary topic score применяется во время discovery до включения статьи в persisted graph.
+Для каждой пары `candidate × question` он использует только `query_similarity` и максимальную
+`seed_similarity` с текущими весами `0.70/0.30`:
+
+```text
+preliminary_topic_score(candidate, question) =
+    0.70 × query_similarity(candidate, question)
+  + 0.30 × seed_similarity(candidate)
+```
+
+Если один компонент отсутствует, применяется общая missing-value policy с перенормировкой
+доступных весов. Citations, recency, PageRank и прочие graph/impact signals в preliminary score
+не входят. Каждый вопрос формирует независимый shortlist; сбалансированное объединение этих
+shortlists будет определять frontier следующих уровней discovery.
+
+Final score рассчитывается после формирования project graph. Он объединяет topic, impact и graph
+компоненты и используется для итогового ranking, но не для предварительного отбора frontier.
+
 ## Стандартные веса
 
 | Группа | Компонент | Вес |

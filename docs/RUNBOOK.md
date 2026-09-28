@@ -216,14 +216,14 @@ docker compose logs --follow worker
 
 ### 5.1. Backend
 
-Обычный набор backend-тестов использует SQLite in-memory и mock-объекты для внешних
-зависимостей. Запущенные PostgreSQL, Redis, worker и доступ в интернет для него не нужны:
+Обычный набор backend-тестов использует SQLite in-memory и test doubles на внешних
+границах. Запущенные PostgreSQL, Redis, worker и доступ в интернет для него не нужны:
 
 ```powershell
-uv run pytest -m "not integration"
+uv run pytest -m "not service_integration and not external"
 ```
 
-Live integration tests в этот прогон не входят. Тест Semantic Scholar дополнительно защищён
+Service integration и external tests в этот прогон не входят. Тест Semantic Scholar защищён
 `skipif` и без явного opt-in отображается как `SKIPPED`.
 
 Запуск отдельных групп:
@@ -233,11 +233,13 @@ uv run pytest tests/backend/test_api.py -q
 uv run pytest tests/backend/test_discovery.py -q
 uv run pytest tests/backend/test_research_pipeline.py -q
 uv run pytest tests/backend/test_seed_resolution.py -q
+uv run pytest tests/backend/test_project_config.py -m "not service_integration" -q
+npm.cmd --prefix frontend test -- research-form.test.ts research-api.test.ts
 ```
 
-Тест `test_discovery_expands_each_frontier_until_max_depth` фиксирует требуемое расширение
-графа до `max_depth=2`. Текущая реализация `CitationDiscovery` обрабатывает только первый
-уровень, поэтому этот regression test будет падать до реализации многоуровневого обхода.
+До начала этапа 4 тест `test_discovery_expands_each_frontier_until_max_depth` отмечен как
+`strict xfail`: текущий `CitationDiscovery` поддерживает только depth 1. Проверка остаётся видимой
+в отчёте и не считается `skip`; неожиданный `XPASS` завершит suite с ошибкой.
 
 Проверка промежуточных состояний и отказов pipeline:
 
@@ -249,14 +251,29 @@ uv run pytest tests/backend/test_research_pipeline.py -v
 `SCORING` → `GRAPH_ANALYSIS` → `COMPLETED`, а также переход в `FAILED` при сбое разрешения
 seed papers и при полном отказе embedding backend.
 
-#### 5.1.1. Live Semantic Scholar API
+#### 5.1.1. PostgreSQL config acceptance
+
+Проверить, что локальный PostgreSQL готов и migrations применены, затем выполнить реальный
+round-trip конфигурации через API/repository:
+
+```powershell
+docker compose up -d postgres
+docker compose exec -T postgres pg_isready -U research -d research_graph
+uv run alembic -c backend/alembic.ini upgrade head
+uv run pytest tests/backend/test_project_config.py -m service_integration -v
+```
+
+Тест создаёт уникальный проект и удаляет его в `finally`. In-memory database в этом профиле не
+используется.
+
+#### 5.1.2. Live Semantic Scholar API
 
 Live-тест выполняет реальный HTTP-запрос и по умолчанию пропускается. Разрешить его только
 для текущей PowerShell-сессии и запустить отдельно:
 
 ```powershell
-$env:RUN_LIVE_SEMANTIC_SCHOLAR_TESTS = "1"
-uv run pytest tests/backend/test_semantic_scholar_integration.py -v -m integration
+$env:RUN_EXTERNAL_RESEARCH_TESTS = "1"
+uv run pytest tests/backend/test_semantic_scholar_integration.py -v -m external
 ```
 
 `SEMANTIC_SCHOLAR_API_KEY` необязателен, но рекомендуется из-за публичных rate limits.
@@ -265,7 +282,7 @@ uv run pytest tests/backend/test_semantic_scholar_integration.py -v -m integrati
 После проверки удалить только временный opt-in флаг:
 
 ```powershell
-Remove-Item Env:RUN_LIVE_SEMANTIC_SCHOLAR_TESTS -ErrorAction SilentlyContinue
+Remove-Item Env:RUN_EXTERNAL_RESEARCH_TESTS -ErrorAction SilentlyContinue
 ```
 
 Если API key был задан вручную в текущем терминале, а не загружен из `.env`, удалить и его:
@@ -278,7 +295,7 @@ Remove-Item Env:SEMANTIC_SCHOLAR_API_KEY -ErrorAction SilentlyContinue
 требуется. Ответы `429`, `5xx` и transport timeout означают проблему внешнего сервиса или
 rate limit, а не обязательную ошибку локального кода.
 
-#### 5.1.2. Статический анализ и форматирование
+#### 5.1.3. Статический анализ и форматирование
 
 ```powershell
 uv run ruff check backend tests
@@ -324,6 +341,9 @@ $projectPayload = @{
         max_depth = 1
         max_papers = 30
         top_k_expansion = 5
+        expand_references_topic_threshold = 0.75
+        pdf_top_n = 10
+        allow_manual_pdf_upload = $false
     }
 } | ConvertTo-Json -Depth 4
 
@@ -335,6 +355,13 @@ $project = Invoke-RestMethod `
 
 $projectId = $project.id
 Write-Host "Project ID: $projectId"
+
+$savedProject = Invoke-RestMethod -Uri "$apiBase/projects/$projectId" -Method Get
+if ($savedProject.config.max_depth -ne 1 `
+    -or $savedProject.config.pdf_top_n -ne 10 `
+    -or $savedProject.config.allow_manual_pdf_upload -ne $false) {
+    throw "Saved project configuration differs from the create payload"
+}
 
 $questionsPayload = @{
     questions = @(
@@ -475,16 +502,18 @@ Start-Process "http://localhost:3000"
 
 Проверить вручную:
 
-1. Создание проекта.
-2. Загрузку `data/related_work_matrix.xlsx`.
-3. Обновление progress до `COMPLETED`.
-4. Появление ranking и citation graph.
-5. Hover по node и выделение citation neighborhood.
-6. Выбор paper из graph и table.
-7. Отображение metadata, component scores и question relevance.
-8. Синхронную фильтрацию graph и ranking без нового job.
-9. Empty state для слишком строгих filters.
-10. Адаптивную раскладку на узком экране.
+1. Создание проекта с `max_depth=5`, новым threshold/PDF limit и выключенным manual upload.
+2. Повторное открытие `GET /projects/{project_id}` в DevTools Network и совпадение config с формой.
+3. Сообщение валидации при `top_k_expansion` меньше числа строк research questions.
+4. Загрузку `data/related_work_matrix.xlsx`.
+5. Обновление progress до `COMPLETED`.
+6. Появление ranking и citation graph.
+7. Hover по node и выделение citation neighborhood.
+8. Выбор paper из graph и table.
+9. Отображение metadata, component scores и question relevance.
+10. Синхронную фильтрацию graph и ranking без нового job.
+11. Empty state для слишком строгих filters.
+12. Адаптивную раскладку на узком экране.
 
 ## 8. Persistence и hardening checks
 
