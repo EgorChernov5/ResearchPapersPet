@@ -216,19 +216,69 @@ docker compose logs --follow worker
 
 ### 5.1. Backend
 
-Полный набор тестов:
+Обычный набор backend-тестов использует SQLite in-memory и mock-объекты для внешних
+зависимостей. Запущенные PostgreSQL, Redis, worker и доступ в интернет для него не нужны:
 
 ```powershell
-uv run pytest
+uv run pytest -m "not integration"
 ```
 
-Только API tests:
+Live integration tests в этот прогон не входят. Тест Semantic Scholar дополнительно защищён
+`skipif` и без явного opt-in отображается как `SKIPPED`.
+
+Запуск отдельных групп:
 
 ```powershell
 uv run pytest tests/backend/test_api.py -q
+uv run pytest tests/backend/test_discovery.py -q
+uv run pytest tests/backend/test_research_pipeline.py -q
+uv run pytest tests/backend/test_seed_resolution.py -q
 ```
 
-Статический анализ и форматирование:
+Тест `test_discovery_expands_each_frontier_until_max_depth` фиксирует требуемое расширение
+графа до `max_depth=2`. Текущая реализация `CitationDiscovery` обрабатывает только первый
+уровень, поэтому этот regression test будет падать до реализации многоуровневого обхода.
+
+Проверка промежуточных состояний и отказов pipeline:
+
+```powershell
+uv run pytest tests/backend/test_research_pipeline.py -v
+```
+
+Эта группа проверяет последовательность `RESOLVING_SEEDS` → `DISCOVERING` → `EMBEDDING` →
+`SCORING` → `GRAPH_ANALYSIS` → `COMPLETED`, а также переход в `FAILED` при сбое разрешения
+seed papers и при полном отказе embedding backend.
+
+#### 5.1.1. Live Semantic Scholar API
+
+Live-тест выполняет реальный HTTP-запрос и по умолчанию пропускается. Разрешить его только
+для текущей PowerShell-сессии и запустить отдельно:
+
+```powershell
+$env:RUN_LIVE_SEMANTIC_SCHOLAR_TESTS = "1"
+uv run pytest tests/backend/test_semantic_scholar_integration.py -v -m integration
+```
+
+`SEMANTIC_SCHOLAR_API_KEY` необязателен, но рекомендуется из-за публичных rate limits.
+`Settings` читает ключ из `.env`; выводить ключ в команду или сохранять его в Git не нужно.
+
+После проверки удалить только временный opt-in флаг:
+
+```powershell
+Remove-Item Env:RUN_LIVE_SEMANTIC_SCHOLAR_TESTS -ErrorAction SilentlyContinue
+```
+
+Если API key был задан вручную в текущем терминале, а не загружен из `.env`, удалить и его:
+
+```powershell
+Remove-Item Env:SEMANTIC_SCHOLAR_API_KEY -ErrorAction SilentlyContinue
+```
+
+Постоянно менять `.env`, `pyproject.toml` или конфигурацию приложения после live-теста не
+требуется. Ответы `429`, `5xx` и transport timeout означают проблему внешнего сервиса или
+rate limit, а не обязательную ошибку локального кода.
+
+#### 5.1.2. Статический анализ и форматирование
 
 ```powershell
 uv run ruff check backend tests
