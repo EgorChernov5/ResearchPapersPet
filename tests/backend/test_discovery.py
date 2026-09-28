@@ -78,3 +78,41 @@ async def test_discovery_isolates_provider_failure_and_respects_limits() -> None
     assert len(result.failures) == 1
     assert result.failures[0].paper_id == "seed-1"
     assert result.failures[0].direction == "references"
+
+
+@pytest.mark.asyncio
+async def test_discovery_expands_each_frontier_until_max_depth() -> None:
+    """
+    Проверяет последовательное расширение citation graph до max_depth=2.
+
+    Returns:
+        None: Assertions подтверждают второй frontier, depths и направленные edges.
+
+    Fallbacks:
+        Пустые направления завершают только соответствующую ветку обхода.
+    """
+
+    # Build a linear reference chain so each frontier has one deterministic paper.
+    seed = ProviderPaper("seed", "Seed", {}, year=2024)
+    reference = ProviderPaper("reference", "Reference", {}, year=2023)
+    second_level = ProviderPaper("second-level", "Second Level", {}, year=2022)
+    provider = Mock(spec=ScholarlyProvider)
+    provider.get_references = AsyncMock(side_effect=[[reference], [second_level]])
+    provider.get_citations = AsyncMock(side_effect=[[], []])
+
+    result = await CitationDiscovery(provider).discover(
+        [seed],
+        ResearchConfig(max_depth=2, max_papers=10, top_k_expansion=5),
+    )
+
+    assert [(item.paper.paper_id, item.depth) for item in result.papers] == [
+        ("seed", 0),
+        ("reference", 1),
+        ("second-level", 2),
+    ]
+    assert {(edge.source_paper_id, edge.target_paper_id) for edge in result.citations} == {
+        ("seed", "reference"),
+        ("reference", "second-level"),
+    }
+    assert provider.get_references.await_count == 2
+    assert provider.get_citations.await_count == 2
