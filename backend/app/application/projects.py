@@ -149,8 +149,15 @@ class AddResearchQuestions:
             raise ValueError("At least one research question is required")
         with self.session_factory() as session:
             repository = ProjectRepository(session)
-            if repository.get_config(project_id) is None:
+            config = repository.get_config(project_id)
+            if config is None:
                 raise ResourceNotFoundError(f"Research project {project_id} was not found")
+            # Preserve per-question representation before persisting the whole new batch.
+            question_count = len(repository.get_questions(project_id)) + len(texts)
+            if config.top_k_expansion < question_count:
+                raise ValueError(
+                    "top_k_expansion must be greater than or equal to the research question count"
+                )
             questions = repository.add_questions(project_id, texts)
             session.commit()
             return questions

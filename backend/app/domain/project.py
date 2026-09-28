@@ -8,9 +8,12 @@ class ResearchConfig:
     Конфигурация controlled research pipeline.
 
     Attributes:
-        max_depth (int): Максимальная глубина citation expansion. По умолчанию: 2.
+        max_depth (int): Максимальная глубина citation expansion 1–5. По умолчанию: 2.
         max_papers (int): Максимальное число статей. По умолчанию: 300.
-        top_k_expansion (int): Число кандидатов на один expansion step. По умолчанию: 20.
+        top_k_expansion (int): Глобальный лимит статей одного уровня. По умолчанию: 20.
+        expand_references_topic_threshold (float): Порог раскрытия references. По умолчанию: 0.75.
+        pdf_top_n (int): Число discovered PDF targets без учёта seeds. По умолчанию: 20.
+        allow_manual_pdf_upload (bool): Разрешает ручной fallback PDF. По умолчанию: False.
         topic_weight (float): Вес topic score в final score. По умолчанию: 0.60.
         impact_weight (float): Вес impact score в final score. По умолчанию: 0.25.
         graph_weight (float): Вес graph score в final score. По умолчанию: 0.15.
@@ -32,6 +35,8 @@ class ResearchConfig:
     top_k_expansion: int = 20
     min_year: int | None = None
     expand_references_topic_threshold: float = 0.75
+    pdf_top_n: int = 20
+    allow_manual_pdf_upload: bool = False
     topic_weight: float = 0.60
     impact_weight: float = 0.25
     graph_weight: float = 0.15
@@ -56,8 +61,14 @@ class ResearchConfig:
         """
 
         # Validate hard expansion limits before a job can be enqueued.
-        if self.max_depth < 1 or self.max_papers < 1 or self.top_k_expansion < 1:
+        if not 1 <= self.max_depth <= 5:
+            raise ValueError("max_depth must be between 1 and 5")
+        if self.max_papers < 1 or self.top_k_expansion < 1:
             raise ValueError("Research limits must be positive")
+        if not 0 <= self.expand_references_topic_threshold <= 1:
+            raise ValueError("expand_references_topic_threshold must be between 0 and 1")
+        if self.pdf_top_n < 0:
+            raise ValueError("pdf_top_n must be non-negative")
         if self.recency_tau <= 0:
             raise ValueError("recency_tau must be positive")
 

@@ -332,6 +332,33 @@ main {
   padding: 4px 0 18px;
 }
 
+.checkbox-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding-top: 25px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.checkbox-field input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--teal);
+}
+
+.checkbox-field span {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.checkbox-field small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
 .primary-button {
   grid-column: 1 / -1;
   min-height: 54px;

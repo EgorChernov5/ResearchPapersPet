@@ -14,11 +14,13 @@ class ResearchConfigPayload(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    max_depth: int = Field(default=2, ge=1)
+    max_depth: int = Field(default=2, ge=1, le=5)
     max_papers: int = Field(default=300, ge=1)
     top_k_expansion: int = Field(default=20, ge=1)
     min_year: int | None = Field(default=None, ge=1000)
     expand_references_topic_threshold: float = Field(default=0.75, ge=0, le=1)
+    pdf_top_n: int = Field(default=20, ge=0)
+    allow_manual_pdf_upload: bool = False
     topic_weight: float = Field(default=0.60, ge=0)
     impact_weight: float = Field(default=0.25, ge=0)
     graph_weight: float = Field(default=0.15, ge=0)

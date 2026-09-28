@@ -3,6 +3,9 @@ export interface ResearchConfigRequest {
   max_papers: number;
   top_k_expansion: number;
   min_year?: number;
+  expand_references_topic_threshold: number;
+  pdf_top_n: number;
+  allow_manual_pdf_upload: boolean;
 }
 
 export interface ResearchSetupInput {

@@ -8,6 +8,9 @@ export const DEFAULT_RESEARCH_CONFIG: ResearchConfigRequest = {
   max_depth: 2,
   max_papers: 300,
   top_k_expansion: 20,
+  expand_references_topic_threshold: 0.75,
+  pdf_top_n: 20,
+  allow_manual_pdf_upload: false,
 };
 
 export const JOB_STATUS_LABELS: Record<ResearchJobStatus, string> = {

@@ -12,7 +12,14 @@ describe("ResearchApi", () => {
     const project = {
       id: "project-1",
       name: "Graph retrieval",
-      config: { max_depth: 1, max_papers: 50, top_k_expansion: 10 },
+      config: {
+        max_depth: 1,
+        max_papers: 50,
+        top_k_expansion: 10,
+        expand_references_topic_threshold: 0.7,
+        pdf_top_n: 6,
+        allow_manual_pdf_upload: true,
+      },
       questions: [],
     };
     const fetchMock = vi.fn().mockResolvedValue(

@@ -20,6 +20,13 @@ export function ResearchForm({ disabled, statusMessage, onSubmit }: ResearchForm
   const [topKExpansion, setTopKExpansion] = useState(
     String(DEFAULT_RESEARCH_CONFIG.top_k_expansion),
   );
+  const [referencesThreshold, setReferencesThreshold] = useState(
+    String(DEFAULT_RESEARCH_CONFIG.expand_references_topic_threshold),
+  );
+  const [pdfTopN, setPdfTopN] = useState(String(DEFAULT_RESEARCH_CONFIG.pdf_top_n));
+  const [allowManualPdfUpload, setAllowManualPdfUpload] = useState(
+    DEFAULT_RESEARCH_CONFIG.allow_manual_pdf_upload,
+  );
   const [minYear, setMinYear] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -40,6 +47,10 @@ export function ResearchForm({ disabled, statusMessage, onSubmit }: ResearchForm
       setFormError("Выберите Related Work в формате XLSX или CSV.");
       return;
     }
+    if (Number(topKExpansion) < questions.length) {
+      setFormError("Top-K expansion не может быть меньше числа research questions.");
+      return;
+    }
 
     // Send the validated setup as one frontend workflow input.
     await onSubmit({
@@ -50,6 +61,9 @@ export function ResearchForm({ disabled, statusMessage, onSubmit }: ResearchForm
         max_depth: Number(maxDepth),
         max_papers: Number(maxPapers),
         top_k_expansion: Number(topKExpansion),
+        expand_references_topic_threshold: Number(referencesThreshold),
+        pdf_top_n: Number(pdfTopN),
+        allow_manual_pdf_upload: allowManualPdfUpload,
         ...(minYear.trim() ? { min_year: Number(minYear) } : {}),
       },
     });
@@ -115,34 +129,41 @@ export function ResearchForm({ disabled, statusMessage, onSubmit }: ResearchForm
             <span>Глубина графа</span>
             <input
               type="number"
+              name="max_depth"
               min="1"
+              max="5"
               value={maxDepth}
               onChange={(event) => setMaxDepth(event.target.value)}
               required
               disabled={disabled}
             />
+            <small>Число уровней citation discovery, от 1 до 5.</small>
           </label>
           <label className="field">
             <span>Максимум статей</span>
             <input
               type="number"
+              name="max_papers"
               min="1"
               value={maxPapers}
               onChange={(event) => setMaxPapers(event.target.value)}
               required
               disabled={disabled}
             />
+            <small>Жёсткий лимит проекта, включая seed papers.</small>
           </label>
           <label className="field">
             <span>Top-K expansion</span>
             <input
               type="number"
+              name="top_k_expansion"
               min="1"
               value={topKExpansion}
               onChange={(event) => setTopKExpansion(event.target.value)}
               required
               disabled={disabled}
             />
+            <small>Глобальный лимит уровня, не лимит одного узла.</small>
           </label>
           <label className="field">
             <span>Минимальный год</span>
@@ -154,6 +175,47 @@ export function ResearchForm({ disabled, statusMessage, onSubmit }: ResearchForm
               placeholder="Без ограничения"
               disabled={disabled}
             />
+          </label>
+          <label className="field">
+            <span>Порог раскрытия references</span>
+            <input
+              type="number"
+              name="expand_references_topic_threshold"
+              min="0"
+              max="1"
+              step="0.01"
+              value={referencesThreshold}
+              onChange={(event) => setReferencesThreshold(event.target.value)}
+              required
+              disabled={disabled}
+            />
+            <small>References discovered paper запрашиваются не ниже этого score.</small>
+          </label>
+          <label className="field">
+            <span>PDF для discovered papers</span>
+            <input
+              type="number"
+              name="pdf_top_n"
+              min="0"
+              value={pdfTopN}
+              onChange={(event) => setPdfTopN(event.target.value)}
+              required
+              disabled={disabled}
+            />
+            <small>Seed papers загружаются сверх этого лимита.</small>
+          </label>
+          <label className="checkbox-field">
+            <input
+              type="checkbox"
+              name="allow_manual_pdf_upload"
+              checked={allowManualPdfUpload}
+              onChange={(event) => setAllowManualPdfUpload(event.target.checked)}
+              disabled={disabled}
+            />
+            <span>
+              Разрешить ручную загрузку PDF
+              <small>Недоступные автоматически документы будут ожидать upload.</small>
+            </span>
           </label>
         </div>
       </details>
