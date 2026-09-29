@@ -1,5 +1,7 @@
 import type {
   ApiErrorResponse,
+  DocumentJob,
+  DocumentJobListResponse,
   GraphFilters,
   PaperListResponse,
   PaperDetails,
@@ -124,5 +126,22 @@ export class ResearchApi {
 
   async getPaperDetails(projectId: string, paperId: string): Promise<PaperDetails> {
     return this.request<PaperDetails>(`/projects/${projectId}/papers/${paperId}`);
+  }
+
+  async getProjectDocuments(projectId: string): Promise<DocumentJobListResponse> {
+    return this.request<DocumentJobListResponse>(`/projects/${projectId}/documents`);
+  }
+
+  async uploadPaperDocument(
+    projectId: string,
+    paperId: string,
+    file: File,
+  ): Promise<DocumentJob> {
+    const body = new FormData();
+    body.append("file", file);
+    return this.request<DocumentJob>(`/projects/${projectId}/papers/${paperId}/document`, {
+      method: "POST",
+      body,
+    });
   }
 }

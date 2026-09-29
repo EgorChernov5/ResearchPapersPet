@@ -132,6 +132,41 @@ class ResearchJobResponse(BaseModel):
     finished_at: datetime | None
 
 
+class DocumentJobResponse(BaseModel):
+    """
+    HTTP representation project-scoped document lifecycle.
+
+    Fallbacks:
+        document_id и timestamps остаются null до соответствующего перехода.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    project_id: UUID
+    paper_id: UUID
+    research_job_id: UUID | None
+    document_id: UUID | None
+    source: str
+    status: str
+    error_message: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    created_at: datetime | None
+
+
+class DocumentJobListResponse(BaseModel):
+    """
+    HTTP collection document jobs проекта.
+
+    Fallbacks:
+        Проект без targets возвращает count=0 и пустой documents list.
+    """
+
+    count: int
+    documents: list[DocumentJobResponse]
+
+
 class PaperResponse(BaseModel):
     """
     HTTP representation global metadata и project-specific ranking.

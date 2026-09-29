@@ -1,9 +1,14 @@
-import type { PaperDetails, ResearchQuestion } from "@/api/structures";
+import { useState } from "react";
+
+import type { DocumentJob, PaperDetails, ResearchQuestion } from "@/api/structures";
 
 interface PaperPanelProps {
   details: PaperDetails | null;
   questions: ResearchQuestion[];
   loading: boolean;
+  documentJob: DocumentJob | null;
+  allowManualUpload: boolean;
+  onUpload: (paperId: string, file: File) => Promise<void>;
   onClose: () => void;
 }
 
@@ -27,7 +32,16 @@ function ScoreMetric({
   );
 }
 
-export function PaperPanel({ details, questions, loading, onClose }: PaperPanelProps) {
+export function PaperPanel({
+  details,
+  questions,
+  loading,
+  documentJob,
+  allowManualUpload,
+  onUpload,
+  onClose,
+}: PaperPanelProps) {
+  const [uploading, setUploading] = useState(false);
   const questionsById = new Map(questions.map((question) => [question.id, question.text]));
 
   if (loading) {
@@ -126,6 +140,33 @@ export function PaperPanel({ details, questions, loading, onClose }: PaperPanelP
           ))
         )}
       </section>
+
+      {documentJob && (
+        <section className="document-state" aria-label="Document status">
+          <h4>Full-text document</h4>
+          <p>{documentJob.status.replaceAll("_", " ")}</p>
+          {documentJob.error_message && <small>{documentJob.error_message}</small>}
+        </section>
+      )}
+
+      {allowManualUpload && documentJob?.status === "AWAITING_UPLOAD" && (
+        <label className="manual-pdf-upload">
+          <span>{uploading ? "Загружаем PDF…" : "Загрузить PDF вручную"}</span>
+          <input
+            type="file"
+            accept="application/pdf,.pdf"
+            disabled={uploading}
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              if (!file) {
+                return;
+              }
+              setUploading(true);
+              void onUpload(paper.paper_id, file).finally(() => setUploading(false));
+            }}
+          />
+        </label>
+      )}
 
       {paper.pdf_url && (
         <a className="panel-pdf-link" href={paper.pdf_url} target="_blank" rel="noreferrer">

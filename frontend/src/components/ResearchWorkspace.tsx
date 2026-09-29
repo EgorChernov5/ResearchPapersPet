@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResearchApi } from "@/api/research-api";
 import type {
   GraphFilters as GraphFilterValues,
+  DocumentJob,
   Paper,
   PaperDetails,
   ResearchGraph,
@@ -28,6 +29,7 @@ export function ResearchWorkspace() {
   const [graph, setGraph] = useState<ResearchGraph | null>(null);
   const [selectedPaperId, setSelectedPaperId] = useState<string | null>(null);
   const [paperDetails, setPaperDetails] = useState<PaperDetails | null>(null);
+  const [documentJobs, setDocumentJobs] = useState<DocumentJob[]>([]);
   const selectedPaperIdRef = useRef<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingRanking, setIsLoadingRanking] = useState(false);
@@ -47,6 +49,7 @@ export function ResearchWorkspace() {
     setSelectedPaperId(null);
     selectedPaperIdRef.current = null;
     setPaperDetails(null);
+    setDocumentJobs([]);
     setJob(null);
     setProject(null);
 
@@ -83,8 +86,24 @@ export function ResearchWorkspace() {
     setSelectedPaperId(null);
     selectedPaperIdRef.current = null;
     setPaperDetails(null);
+    setDocumentJobs([]);
     setError(null);
     setStatusMessage(null);
+  }
+
+  async function handleDocumentUpload(paperId: string, file: File) {
+    if (project === null) {
+      return;
+    }
+    setError(null);
+    try {
+      const updated = await api.uploadPaperDocument(project.id, paperId, file);
+      setDocumentJobs((current) =>
+        current.map((document) => (document.paper_id === paperId ? updated : document)),
+      );
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Не удалось загрузить PDF.");
+    }
   }
 
   async function handleGraphFilters(filters: GraphFilterValues) {
@@ -184,6 +203,8 @@ export function ResearchWorkspace() {
               ]);
               setPapers(ranking.papers);
               setGraph(completedGraph);
+              const documentResponse = await api.getProjectDocuments(project.id);
+              setDocumentJobs(documentResponse.documents);
             } catch (caughtError) {
               setError(
                 caughtError instanceof Error
@@ -207,6 +228,33 @@ export function ResearchWorkspace() {
 
     return () => window.clearInterval(timer);
   }, [api, job, project]);
+
+  useEffect(() => {
+    if (
+      project === null ||
+      job?.status !== "COMPLETED" ||
+      !documentJobs.some((document) =>
+        ["PENDING", "DOWNLOADING"].includes(document.status),
+      )
+    ) {
+      return;
+    }
+
+    // Continue observing the independent document branch after ResearchJob completion.
+    const timer = window.setInterval(() => {
+      void api
+        .getProjectDocuments(project.id)
+        .then((response) => setDocumentJobs(response.documents))
+        .catch((caughtError: unknown) => {
+          setError(
+            caughtError instanceof Error
+              ? caughtError.message
+              : "Не удалось обновить document statuses.",
+          );
+        });
+    }, POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [api, documentJobs, job, project]);
 
   return (
     <main>
@@ -285,6 +333,11 @@ export function ResearchWorkspace() {
               details={paperDetails}
               questions={project.questions}
               loading={isLoadingDetails}
+              documentJob={
+                documentJobs.find((document) => document.paper_id === selectedPaperId) ?? null
+              }
+              allowManualUpload={project.config.allow_manual_pdf_upload}
+              onUpload={handleDocumentUpload}
               onClose={() => handlePaperSelect(null)}
             />
           </div>

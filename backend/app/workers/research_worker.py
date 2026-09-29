@@ -5,9 +5,13 @@ import signal
 from datetime import UTC, datetime
 from uuid import UUID
 
+from app.application.documents import ProcessProjectDocuments
 from app.config import settings
+from app.domain.research_job import ResearchJobStatus
 from app.infrastructure.database import Database
+from app.infrastructure.document_storage import create_document_storage
 from app.infrastructure.redis import RedisConnection
+from app.providers.arxiv import ArxivPdfDownloader
 from app.providers.semantic_scholar import SemanticScholarProvider
 from app.research.embeddings import EmbeddingService
 from app.research.pipeline import ResearchPipeline
@@ -59,6 +63,13 @@ class ResearchWorker:
         """
 
         provider = SemanticScholarProvider(self.config)
+        downloader = ArxivPdfDownloader(
+            self.config.arxiv_pdf_base_url,
+            self.config.arxiv_download_timeout_seconds,
+            self.config.arxiv_download_max_retries,
+            self.config.document_storage_max_bytes,
+            self.config.arxiv_user_agent,
+        )
         try:
             embedding_service = EmbeddingService(
                 model_name=self.config.embedding_model_name,
@@ -71,9 +82,17 @@ class ResearchWorker:
                 provider,
                 embedding_service,
             )
-            await pipeline.run(project_id, job_id)
+            job = await pipeline.run(project_id, job_id)
+            # Automatic documents run after the research transaction has reached terminal success.
+            if job.status == ResearchJobStatus.COMPLETED:
+                await ProcessProjectDocuments(
+                    self.database.session_factory,
+                    create_document_storage(self.config),
+                    downloader,
+                ).execute(project_id)
         finally:
             await provider.close()
+            await downloader.close()
 
     def stop(self, signal_number: int, frame: object) -> None:
         """

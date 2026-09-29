@@ -1555,16 +1555,55 @@ footer {
 }
 
 .panel-abstract,
-.question-scores {
+.question-scores,
+.document-state {
   margin-top: 22px;
 }
 
 .panel-abstract h4,
-.question-scores h4 {
+.question-scores h4,
+.document-state h4 {
   margin: 0 0 8px;
   font-size: 10px;
   letter-spacing: 0.09em;
   text-transform: uppercase;
+}
+
+.document-state p {
+  margin: 0;
+  color: var(--teal-dark);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+}
+
+.document-state small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.manual-pdf-upload {
+  min-height: 42px;
+  display: grid;
+  place-items: center;
+  margin-top: 12px;
+  cursor: pointer;
+  color: var(--surface);
+  background: var(--orange);
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.manual-pdf-upload input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
 }
 
 .panel-abstract p,

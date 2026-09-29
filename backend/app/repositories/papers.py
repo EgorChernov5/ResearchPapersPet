@@ -156,6 +156,29 @@ class PaperRepository:
             pdf_url=model.pdf_url,
         )
 
+    def get_external_identifier(self, paper_id: UUID, provider: str) -> str | None:
+        """
+        Возвращает canonical external identifier статьи.
+
+        Parameters:
+            paper_id (UUID): Идентификатор global Paper.
+            provider (str): Нормализованное имя provider.
+
+        Returns:
+            str | None: Сохранённое значение или None.
+
+        Fallbacks:
+            Missing paper/provider не создаёт synthetic identifier.
+        """
+
+        # Read only the requested provider to keep automatic source selection explicit.
+        return self.session.scalar(
+            select(ExternalIdentifierModel.value).where(
+                ExternalIdentifierModel.paper_id == paper_id,
+                ExternalIdentifierModel.provider == provider.casefold(),
+            )
+        )
+
 
 class ProjectPaperRepository:
     """

@@ -54,6 +54,36 @@ export interface ResearchJob {
   finished_at: string | null;
 }
 
+export type DocumentJobStatus =
+  | "PENDING"
+  | "DOWNLOADING"
+  | "AWAITING_UPLOAD"
+  | "PARSING"
+  | "CHUNKING"
+  | "INDEXING"
+  | "COMPLETED"
+  | "UNAVAILABLE"
+  | "FAILED";
+
+export interface DocumentJob {
+  id: string;
+  project_id: string;
+  paper_id: string;
+  research_job_id: string | null;
+  document_id: string | null;
+  source: "ARXIV" | "MANUAL_UPLOAD";
+  status: DocumentJobStatus;
+  error_message: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string | null;
+}
+
+export interface DocumentJobListResponse {
+  count: number;
+  documents: DocumentJob[];
+}
+
 export interface Paper {
   paper_id: string;
   semantic_scholar_id: string | null;

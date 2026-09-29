@@ -5,6 +5,8 @@ from redis.exceptions import RedisError
 
 from app.api.structures import (
     CreateProjectRequest,
+    DocumentJobListResponse,
+    DocumentJobResponse,
     RelatedWorkUploadResponse,
     ResearchJobResponse,
     ResearchProjectResponse,
@@ -12,12 +14,14 @@ from app.api.structures import (
     ResearchQuestionsRequest,
     ResearchQuestionsResponse,
 )
+from app.application.documents import GetProjectDocuments, UploadPaperDocument
 from app.application.exceptions import ResourceNotFoundError
 from app.application.projects import AddResearchQuestions, CreateProject, GetProject
 from app.application.start_research import StartResearch
 from app.application.upload_related_work import UploadRelatedWork
 from app.config import settings
 from app.domain.project import ResearchConfig
+from app.infrastructure.document_storage import DocumentSizeError, DocumentStorageError
 from app.research.related_work_parser import RelatedWorkParseError, RelatedWorkParser
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -204,3 +208,91 @@ def start_research(project_id: UUID, request: Request) -> ResearchJobResponse:
             detail=f"Redis queue is unavailable: {error}",
         ) from error
     return ResearchJobResponse.model_validate(job)
+
+
+@router.get("/{project_id}/documents", response_model=DocumentJobListResponse)
+def get_project_documents(project_id: UUID, request: Request) -> DocumentJobListResponse:
+    """
+    Возвращает observable document states проекта.
+
+    Parameters:
+        project_id (UUID): Идентификатор проекта.
+        request (Request): FastAPI request с database state.
+
+    Returns:
+        DocumentJobListResponse: Список automatic/manual targets.
+
+    Fallbacks:
+        Missing project возвращает HTTP 404.
+    """
+
+    try:
+        documents = GetProjectDocuments(request.app.state.database.session_factory).execute(
+            project_id
+        )
+    except ResourceNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    return DocumentJobListResponse(
+        count=len(documents),
+        documents=[DocumentJobResponse.model_validate(document) for document in documents],
+    )
+
+
+@router.post(
+    "/{project_id}/papers/{paper_id}/document",
+    response_model=DocumentJobResponse,
+)
+async def upload_paper_document(
+    project_id: UUID,
+    paper_id: UUID,
+    file: UploadFile,
+    request: Request,
+) -> DocumentJobResponse:
+    """
+    Загружает manual PDF только для разрешённого AWAITING_UPLOAD target.
+
+    Parameters:
+        project_id (UUID): Идентификатор проекта.
+        paper_id (UUID): Идентификатор target paper.
+        file (UploadFile): Multipart PDF.
+        request (Request): FastAPI request с database и storage state.
+
+    Returns:
+        DocumentJobResponse: Job, поставленная на parsing.
+
+    Fallbacks:
+        Missing target даёт 404, forbidden state/content — 422, oversized PDF — 413.
+    """
+
+    # Bound multipart memory consumption before storage performs full PDF validation.
+    config = settings()
+    content = await file.read(config.document_storage_max_bytes + 1)
+    if len(content) > config.document_storage_max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"PDF exceeds {config.document_storage_max_bytes} bytes",
+        )
+    try:
+        document = UploadPaperDocument(
+            request.app.state.database.session_factory,
+            request.app.state.document_storage,
+        ).execute(
+            project_id,
+            paper_id,
+            content,
+            file.content_type or "application/octet-stream",
+            file.filename or "",
+        )
+    except ResourceNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except DocumentSizeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=str(error),
+        ) from error
+    except (DocumentStorageError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(error),
+        ) from error
+    return DocumentJobResponse.model_validate(document)
