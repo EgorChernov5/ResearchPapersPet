@@ -1,9 +1,9 @@
 # Scoring научных публикаций
 
 Документ описывает метрики, формулы и стандартные веса, применяемые к каждой статье
-исследовательского проекта. Фактической реализацией служат модули
-`backend/app/research/semantic_ranking.py`, `impact_ranking.py`, `graph_analysis.py` и
-`final_scoring.py`.
+исследовательского проекта. Preliminary ranking реализован отдельно в
+`backend/app/research/preliminary_scoring.py`; итоговый pipeline использует
+`semantic_ranking.py`, `impact_ranking.py`, `graph_analysis.py` и `final_scoring.py`.
 
 ## Общая схема
 
@@ -23,8 +23,9 @@ incident citation edges ──── connectivity_score ─┴─ graph_score
 topic_score + impact_score + graph_score ────────── final_score
 ```
 
-Статья и каждый вопрос кодируются одной Sentence Transformers-моделью. Для статьи входной
-текст имеет вид `{title} [SEP] {abstract}`. При отсутствии abstract используется только title.
+Статья и каждый вопрос кодируются одной Sentence Transformers-моделью. Для статьи с abstract
+входной текст имеет вид `{title} [SEP] {abstract}`. При отсутствующем или пустом abstract в
+encoder передаётся ровно `{title}`, без separator и пустого хвоста.
 
 ## Preliminary и final scoring
 
@@ -41,10 +42,42 @@ preliminary_topic_score(candidate, question) =
 Если один компонент отсутствует, применяется общая missing-value policy с перенормировкой
 доступных весов. Citations, recency, PageRank и прочие graph/impact signals в preliminary score
 не входят. Каждый вопрос формирует независимый shortlist; сбалансированное объединение этих
-shortlists будет определять frontier следующих уровней discovery.
+shortlists определяет общий набор кандидатов для frontier и позднее используется при выборе PDF.
+
+Selector выполняет один первый проход по вопросам в сохранённом порядке. Для каждого вопроса он
+берёт кандидата с максимальным `preliminary_topic_score`, которого ещё нет в результате. Если
+лидер уже выбран другим вопросом, используется следующий уникальный кандидат его shortlist. Так
+при `top_k_expansion >= question_count` каждый непустой вопрос получает представителя, если в его
+shortlist существует отдельный доступный paper.
+
+После первого прохода свободные места общего `top_k_expansion` заполняются кандидатами всех
+shortlists по убыванию `preliminary_topic_score`. Paper, встретившийся у нескольких вопросов,
+добавляется только один раз. Для одинаковых scores используется возрастание canonical paper UUID;
+`None` следует после числовых scores. Поэтому выбор детерминирован для одинакового входа и никогда
+не превышает глобальный лимит уровня.
+
+Versioned paper embeddings являются глобальным cache: scorer сначала читает совместимые
+`model_name + model_version + dimensions` vectors из PostgreSQL/pgvector и создаёт только
+отсутствующие. Embeddings вопросов вычисляются в том же model space для конкретного запуска.
+Кандидаты сортируются по `preliminary_topic_score` по убыванию, затем по canonical UUID;
+отброшенные кандидаты не получают project-specific score records.
 
 Final score рассчитывается после формирования project graph. Он объединяет topic, impact и graph
 компоненты и используется для итогового ranking, но не для предварительного отбора frontier.
+
+## Место preliminary score в traversal
+
+Обход выполняется breadth-first по целым уровням. Seeds получают depth `0` и раскрываются в обе
+стороны. Для каждого следующего уровня кандидаты всех frontier papers сначала объединяются и
+дедуплицируются, затем один общий preliminary scoring и balanced selection формируют следующий
+frontier. Поэтому `top_k_expansion` ограничивает уровень целиком, а не отдельный узел или
+направление provider request.
+
+Лучший preliminary score выбранной paper среди research questions сохраняется в памяти обхода и
+решает только одно: запрашивать ли её references на следующем уровне. Citations запрашиваются
+независимо от score. Preliminary score не подмешивается в final score и не меняет формулы impact,
+PageRank или graph proximity. После завершения обхода project graph получает только выбранные
+papers и induced citation edges, у которых выбраны оба конца.
 
 ## Стандартные веса
 

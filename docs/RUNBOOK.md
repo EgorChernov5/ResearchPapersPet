@@ -237,9 +237,35 @@ uv run pytest tests/backend/test_project_config.py -m "not service_integration" 
 npm.cmd --prefix frontend test -- research-form.test.ts research-api.test.ts
 ```
 
-До начала этапа 4 тест `test_discovery_expands_each_frontier_until_max_depth` отмечен как
-`strict xfail`: текущий `CitationDiscovery` поддерживает только depth 1. Проверка остаётся видимой
-в отчёте и не считается `skip`; неожиданный `XPASS` завершит suite с ошибкой.
+#### 5.1.1. Многоуровневый citation traversal
+
+Targeted suite использует настоящий `CitationDiscovery`, записанный fixture-provider и проверяет
+depth `1/2/3/5`, циклы, раннюю остановку, hard limits, threshold references и изоляцию ошибок:
+
+```powershell
+python --version
+uv --version
+uv sync --dev
+uv run pytest --version
+uv run ruff --version
+uv run pytest tests/backend/test_discovery.py tests/backend/test_research_pipeline.py -v
+```
+
+Безопасная стартовая конфигурация для ручной проверки — `max_depth=2`, `max_papers=50` и
+`top_k_expansion=10`. Рост `max_depth`, размера frontier и числа seeds увеличивает число запросов;
+для live API рекомендуется задать `SEMANTIC_SCHOLAR_API_KEY` и сначала использовать малые лимиты.
+External smoke test выполняется отдельно и никогда не заменяет deterministic suite:
+
+```powershell
+$env:RUN_EXTERNAL_RESEARCH_TESTS = "1"
+uv run pytest tests/backend/test_semantic_scholar_integration.py -m external -v
+Remove-Item Env:RUN_EXTERNAL_RESEARCH_TESTS
+```
+
+Без `SEMANTIC_SCHOLAR_API_KEY` Graph API применяет общий неаутентифицированный rate limit и может
+ответить `429` уже на первом запросе. Такой результат означает недоступность внешнего gate, а не
+успех или дефект traversal. Для воспроизводимой проверки задайте ключ в `.env`, не добавляя файл
+в Git; тест намеренно не превращает `429` в skip или pass.
 
 Проверка промежуточных состояний и отказов pipeline:
 
@@ -251,7 +277,103 @@ uv run pytest tests/backend/test_research_pipeline.py -v
 `SCORING` → `GRAPH_ANALYSIS` → `COMPLETED`, а также переход в `FAILED` при сбое разрешения
 seed papers и при полном отказе embedding backend.
 
-#### 5.1.1. PostgreSQL config acceptance
+#### 5.1.2. Интеграция traversal в ResearchPipeline
+
+Default targeted tests проверяют порядок seed embeddings → discovery, depth `2`, минимальную
+persisted depth, монотонный progress и повторный job без duplicates:
+
+```powershell
+python --version
+uv --version
+uv sync --dev
+uv run pytest --version
+uv run ruff --version
+uv run pytest tests/backend/test_research_pipeline.py tests/backend/test_repositories.py -v
+```
+
+Основной gate этапа 5 использует настоящие PostgreSQL/pgvector и Redis. Проверить Docker и
+подготовить services:
+
+```powershell
+docker version
+docker compose version
+docker compose config --quiet
+docker compose up -d postgres redis
+docker compose ps postgres redis
+docker compose exec -T postgres pg_isready -U research -d research_graph
+docker compose exec -T redis redis-cli ping
+uv run alembic -c backend/alembic.ini upgrade head
+uv run alembic -c backend/alembic.ini current
+```
+
+После ответов `accepting connections`, `PONG` и актуальной Alembic revision запустить service
+integration. Тест создаёт уникальные project/queue данные и удаляет их в `finally`:
+
+```powershell
+uv run pytest tests/backend/test_research_pipeline_integration.py -m service_integration -v
+```
+
+Ручной acceptance с `max_depth=2` выполняется через обычный UI/API и worker. Во время job значение
+`progress` не должно уменьшаться; ranking и graph endpoints после `COMPLETED` должны возвращать
+одинаковый набор paper IDs, рёбра только между выбранными nodes и depths `0..2`.
+
+#### 5.1.3. Preliminary semantic scoring
+
+Быстрые targeted tests проверяют подготовку `title`/`title [SEP] abstract`, controlled vectors,
+missing-value policy, сортировку, независимые shortlists и повторное использование cache:
+
+```powershell
+uv run pytest tests/backend/test_embeddings.py tests/backend/test_preliminary_scoring.py -q
+```
+
+Для реальной SPECTER → pgvector цепочки сначала проверить окружение и подготовить PostgreSQL:
+
+```powershell
+python --version
+uv --version
+docker version
+docker compose version
+uv sync --dev
+docker compose up -d postgres
+docker compose exec -T postgres pg_isready -U research -d research_graph
+uv run alembic -c backend/alembic.ini upgrade head
+uv run alembic -c backend/alembic.ini current
+```
+
+Затем запустить integration test:
+
+```powershell
+uv run pytest tests/backend/test_preliminary_scoring_integration.py -m service_integration -v
+```
+
+Первый запуск загружает `sentence-transformers/allenai-specter` и может быть заметно дольше.
+Последующие запуски используют локальный Hugging Face cache. Для первого запуска нужен доступ к
+модели; `EMBEDDING_MODEL_NAME`, `EMBEDDING_MODEL_VERSION` и `EMBEDDING_DIMENSIONS` должны
+соответствовать применённой pgvector migration.
+
+#### 5.1.4. Balanced per-question selector
+
+Selector не использует внешние сервисы, БД или дополнительные зависимости. Проверить базовое
+окружение и наличие установленной dev-группы:
+
+```powershell
+python --version
+uv --version
+uv sync --dev
+uv run pytest --version
+uv run ruff --version
+```
+
+Запустить targeted tests этапа 3:
+
+```powershell
+uv run pytest tests/backend/test_balanced_selection.py -v
+```
+
+Проверки покрывают один и несколько вопросов, пересекающиеся shortlists, глобальный лимит,
+представительство при точном лимите, canonical tie-breaker и повторяемость результата.
+
+#### 5.1.5. PostgreSQL config acceptance
 
 Проверить, что локальный PostgreSQL готов и migrations применены, затем выполнить реальный
 round-trip конфигурации через API/repository:
@@ -266,7 +388,7 @@ uv run pytest tests/backend/test_project_config.py -m service_integration -v
 Тест создаёт уникальный проект и удаляет его в `finally`. In-memory database в этом профиле не
 используется.
 
-#### 5.1.2. Live Semantic Scholar API
+#### 5.1.6. Live Semantic Scholar API
 
 Live-тест выполняет реальный HTTP-запрос и по умолчанию пропускается. Разрешить его только
 для текущей PowerShell-сессии и запустить отдельно:
@@ -295,7 +417,7 @@ Remove-Item Env:SEMANTIC_SCHOLAR_API_KEY -ErrorAction SilentlyContinue
 требуется. Ответы `429`, `5xx` и transport timeout означают проблему внешнего сервиса или
 rate limit, а не обязательную ошибку локального кода.
 
-#### 5.1.3. Статический анализ и форматирование
+#### 5.1.7. Статический анализ и форматирование
 
 ```powershell
 uv run ruff check backend tests
@@ -597,7 +719,144 @@ docker compose exec -T postgres psql `
     -c "SELECT COUNT(*) AS projects FROM research_projects; SELECT COUNT(*) AS papers FROM papers; SELECT COUNT(*) AS citations FROM citations;"
 ```
 
+### 8.4. DocumentStorage и RustFS
+
+Local backend используется по умолчанию:
+
+```powershell
+$env:DOCUMENT_STORAGE_BACKEND = "local"
+$env:DOCUMENT_STORAGE_LOCAL_ROOT = ".\data\document-storage"
+$env:DOCUMENT_STORAGE_MAX_BYTES = "50000000"
+```
+
+Для production S3 задайте `DOCUMENT_STORAGE_BACKEND=s3`, bucket и region. Оставьте
+`DOCUMENT_STORAGE_S3_ENDPOINT_URL` пустым для AWS S3 или укажите URL совместимого сервиса.
+Credentials не записываются в `.env` под version control: используйте environment, secret store
+или стандартную AWS credential chain.
+
+Проверка RustFS-контракта выполняется отдельным Compose profile. Сначала проверить окружение:
+
+```powershell
+uv run python -c "import boto3; print(boto3.__version__)"
+docker version
+docker compose version
+docker compose config --quiet
+```
+
+Если `boto3` отсутствует, синхронизировать уже объявленные зависимости:
+
+```powershell
+uv sync --dev
+```
+
+Поднять RustFS и убедиться, что healthcheck успешен:
+
+```powershell
+docker pull rustfs/rustfs:1.0.0
+docker compose --profile service-integration up -d rustfs
+docker compose --profile service-integration ps rustfs
+Invoke-RestMethod http://127.0.0.1:59000/health
+```
+
+Targeted gate этапа 7:
+
+```powershell
+uv run pytest -m "not service_integration and not external" tests/backend/test_document_storage.py
+uv run pytest -m service_integration tests/backend/test_document_storage.py
+```
+
+После targeted gate выполняется общий gate из раздела 5. RustFS использует тот же S3-compatible
+contract, что production; тест самостоятельно идемпотентно создаёт test bucket.
+
+### 8.5. arXiv download и manual upload
+
+Проверить настройки и уже объявленные зависимости этапа 8:
+
+```powershell
+uv run python -c "import httpx, multipart; print(httpx.__version__)"
+$env:ARXIV_PDF_BASE_URL = "https://export.arxiv.org/pdf"
+$env:ARXIV_DOWNLOAD_TIMEOUT_SECONDS = "30"
+$env:ARXIV_DOWNLOAD_MAX_RETRIES = "3"
+$env:ARXIV_USER_AGENT = "ResearchPapersPet/0.1 (mailto:your-real-contact@example.com)"
+```
+
+Если импорт не работает, синхронизировать существующий lockfile (новые пакеты этапу 8 не нужны):
+
+```powershell
+uv sync --dev
+```
+
+После завершения research job получить document states:
+
+```powershell
+$documents = Invoke-RestMethod `
+    -Uri "http://localhost:8000/projects/$projectId/documents"
+$documents.documents | Format-Table paper_id, status, source, error_message
+```
+
+Для target в `AWAITING_UPLOAD` загрузить PDF. Endpoint отклонит запрос, если checkbox проекта был
+выключен, paper не является выбранным target или состояние уже изменилось:
+
+```powershell
+curl.exe -f -X POST `
+    -F "file=@C:\path\to\paper.pdf;type=application/pdf" `
+    "http://localhost:8000/projects/$projectId/papers/$paperId/document"
+```
+
+Targeted local gate этапа 8 использует настоящий loopback HTTP server и настоящий multipart/local
+storage path, но не обращается в интернет:
+
+```powershell
+uv run pytest -m "not external" `
+    tests/backend/test_arxiv_documents.py `
+    tests/backend/test_document_upload_api.py `
+    tests/backend/test_research_pipeline.py
+npm.cmd --prefix frontend test -- paper-panel-document.test.ts research-api.test.ts
+```
+
+External arXiv gate запускается отдельно и осознанно:
+
+```powershell
+$env:RUN_EXTERNAL_RESEARCH_TESTS = "1"
+uv run pytest -m external tests/backend/test_arxiv_documents.py
+Remove-Item Env:RUN_EXTERNAL_RESEARCH_TESTS
+```
+
+После targeted/external checks выполнить полный gate из раздела 5 и сообщить число skipped tests.
+
 ## 9. Диагностика проблем
+
+### Document statuses
+
+Research job не ожидает document pipeline. После `COMPLETED` проверить созданные PDF targets и их
+независимые состояния можно в PostgreSQL:
+
+```powershell
+docker compose exec -T postgres psql `
+    -U research `
+    -d research_graph `
+    -c "SELECT project_id, paper_id, source, status, error_message, created_at FROM document_processing_jobs ORDER BY created_at DESC;"
+```
+
+Связанные версии PDF и parser results:
+
+```powershell
+docker compose exec -T postgres psql `
+    -U research `
+    -d research_graph `
+    -c "SELECT paper_id, source, version, status, is_active, checksum FROM paper_documents ORDER BY paper_id, source, version; SELECT document_id, parser_name, parser_version, error_message FROM parsed_documents ORDER BY created_at DESC;"
+```
+
+Targeted gate этапа 6 выполняется после применения migration:
+
+```powershell
+uv run alembic -c backend/alembic.ini upgrade head
+uv run pytest tests/backend/test_documents.py tests/backend/test_research_pipeline.py
+uv run pytest -m service_integration tests/backend/test_documents_integration.py
+```
+
+Migration integration test создаёт отдельную UUID-схему PostgreSQL, выполняет upgrade с
+`20260825_0002` до `head` и удаляет только эту временную схему.
 
 ### Сервис не запустился
 
