@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from uuid import UUID
 
 from app.domain.paper import ProviderPaper
 
@@ -61,7 +62,7 @@ class DiscoveryFailure:
 @dataclass(slots=True)
 class CitationDiscoveryResult:
     """
-    Результат bounded citation discovery depth=1.
+    Результат bounded многоуровневого citation discovery.
 
     Attributes:
         papers (list[DiscoveredPaper]): Seeds и выбранные neighbors.
@@ -75,3 +76,75 @@ class CitationDiscoveryResult:
     papers: list[DiscoveredPaper] = field(default_factory=list)
     citations: list[DiscoveredCitation] = field(default_factory=list)
     failures: list[DiscoveryFailure] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class DiscoverySelection:
+    """
+    Результат semantic selection кандидатов одного уровня.
+
+    Attributes:
+        papers (list[ProviderPaper]): Выбранные papers в порядке balanced selection.
+        preliminary_scores (dict[str, float | None]): Лучший score по provider paper ID.
+
+    Fallbacks:
+        Кандидат без доступного score не раскрывает references на следующем уровне.
+    """
+
+    papers: list[ProviderPaper] = field(default_factory=list)
+    preliminary_scores: dict[str, float | None] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class PreliminaryCandidateScore:
+    """
+    Семантическая оценка кандидата относительно одного research question.
+
+    Attributes:
+        paper_id (UUID): Идентификатор глобальной статьи-кандидата.
+        question_id (UUID): Идентификатор research question.
+        query_similarity (float | None): Cosine similarity кандидата и вопроса.
+        seed_similarity (float | None): Максимальная similarity кандидата с seeds.
+        preliminary_topic_score (float | None): Взвешенная preliminary relevance.
+
+    Fallbacks:
+        Missing vectors дают None и не превращаются в citation или graph signals.
+    """
+
+    paper_id: UUID
+    question_id: UUID
+    query_similarity: float | None
+    seed_similarity: float | None
+    preliminary_topic_score: float | None
+
+
+@dataclass(slots=True)
+class PreliminaryQuestionShortlist:
+    """
+    Независимый ranked shortlist одного research question.
+
+    Attributes:
+        question_id (UUID): Идентификатор research question.
+        candidates (list[PreliminaryCandidateScore]): Кандидаты в порядке убывания score.
+
+    Fallbacks:
+        Вопрос без доступных candidate embeddings получает пустой shortlist.
+    """
+
+    question_id: UUID
+    candidates: list[PreliminaryCandidateScore] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class PreliminaryScoringResult:
+    """
+    Результат preliminary scoring до формирования persisted graph.
+
+    Attributes:
+        shortlists (list[PreliminaryQuestionShortlist]): Ranked список для каждого вопроса.
+
+    Fallbacks:
+        Пустой набор вопросов возвращает пустой результат.
+    """
+
+    shortlists: list[PreliminaryQuestionShortlist] = field(default_factory=list)

@@ -75,7 +75,7 @@ class EmbeddingService:
             from sentence_transformers import SentenceTransformer
 
             self.encoder = SentenceTransformer(self.model_name, trust_remote_code=False)
-        model_dimensions = self.encoder.get_sentence_embedding_dimension()
+        model_dimensions = self.encoder.get_embedding_dimension()
         if model_dimensions != self.dimensions:
             raise ValueError(
                 f"Embedding model returns {model_dimensions} dimensions; "
@@ -111,7 +111,13 @@ class EmbeddingService:
         result = PaperEmbeddingBatch()
         for offset in range(0, len(papers), self.batch_size):
             batch = papers[offset : offset + self.batch_size]
-            texts = [f"{paper.title} [SEP] {paper.abstract or ''}" for paper in batch]
+            # Keep title-only input free from a synthetic separator when abstract is absent.
+            texts = [
+                f"{paper.title} [SEP] {paper.abstract}"
+                if paper.abstract and paper.abstract.strip()
+                else paper.title
+                for paper in batch
+            ]
             try:
                 vectors = self.embed_texts(texts)
                 result.embeddings.extend(

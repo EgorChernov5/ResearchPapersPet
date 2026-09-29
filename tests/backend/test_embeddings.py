@@ -20,10 +20,11 @@ def test_embedding_service_encodes_title_and_optional_abstract() -> None:
 
     # Return one deterministic normalized vector per input text.
     encoder = Mock()
-    encoder.get_sentence_embedding_dimension.return_value = 3
+    encoder.get_embedding_dimension.return_value = 3
     encoder.encode.side_effect = lambda texts, **kwargs: [[1.0, 0.0, 0.0] for _ in texts]
     service = EmbeddingService("fixture", "1", 3, 8, encoder)
     paper = Paper(id=uuid4(), title="Paper without abstract")
+    paper_with_abstract = Paper(id=uuid4(), title="Paper title", abstract="Paper abstract")
     question = ResearchQuestion(
         id=uuid4(),
         project_id=uuid4(),
@@ -31,13 +32,16 @@ def test_embedding_service_encodes_title_and_optional_abstract() -> None:
     )
 
     # Encode papers and questions through the same injected model.
-    paper_batch = service.embed_papers([paper])
+    paper_batch = service.embed_papers([paper, paper_with_abstract])
     question_batch = service.embed_questions([question])
 
     assert paper_batch.failures == []
     assert paper_batch.embeddings[0].vector == [1.0, 0.0, 0.0]
     assert question_batch.failures == []
-    assert encoder.encode.call_args_list[0].args[0] == ["Paper without abstract [SEP] "]
+    assert encoder.encode.call_args_list[0].args[0] == [
+        "Paper without abstract",
+        "Paper title [SEP] Paper abstract",
+    ]
 
 
 def test_embedding_service_isolates_failed_paper() -> None:
@@ -53,7 +57,7 @@ def test_embedding_service_isolates_failed_paper() -> None:
 
     # Fail the batch, recover the first paper, and fail only the second retry.
     encoder = Mock()
-    encoder.get_sentence_embedding_dimension.return_value = 2
+    encoder.get_embedding_dimension.return_value = 2
     encoder.encode.side_effect = [
         RuntimeError("batch failure"),
         [[0.0, 1.0]],
@@ -84,7 +88,7 @@ def test_embedding_service_rejects_model_dimension_mismatch() -> None:
 
     # Report a model dimension different from the database contract.
     encoder = Mock()
-    encoder.get_sentence_embedding_dimension.return_value = 2
+    encoder.get_embedding_dimension.return_value = 2
     service = EmbeddingService("fixture", "1", 3, 1, encoder)
 
     with pytest.raises(ValueError, match="returns 2 dimensions; configured 3"):
