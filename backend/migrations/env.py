@@ -8,7 +8,9 @@ from sqlalchemy import engine_from_config, pool
 
 # Configure Alembic logging and metadata once for both execution modes.
 config = context.config
-config.set_main_option("sqlalchemy.url", settings().database_url)
+
+# Escape percent-encoded URL components for ConfigParser interpolation.
+config.set_main_option("sqlalchemy.url", settings().database_url.replace("%", "%%"))
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 target_metadata = Base.metadata

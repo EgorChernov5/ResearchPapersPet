@@ -1,6 +1,8 @@
+from dataclasses import asdict
 from uuid import uuid4
 
 from app.domain.paper import ProviderPaper
+from app.domain.project import ResearchConfig
 from app.domain.research_job import ResearchJobStatus
 from app.infrastructure.database import Base
 from app.infrastructure.models import (
@@ -114,4 +116,37 @@ def test_research_job_repository_tracks_lifecycle() -> None:
         assert completed.papers_discovered == 3
         assert completed.papers_processed == 3
         assert session.scalar(select(func.count()).select_from(ResearchJobModel)) == 1
+    engine.dispose()
+
+
+def test_research_job_repository_never_decreases_progress() -> None:
+    """
+    Проверяет монотонность observable progress между повторными stage updates.
+
+    Returns:
+        None: Более низкое новое значение не уменьшает сохранённый progress.
+
+    Fallbacks:
+        Значения по-прежнему ограничиваются диапазоном от нуля до единицы.
+    """
+
+    # Create the minimal persisted project and job required by the repository contract.
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    project_id = uuid4()
+    with Session(engine) as session:
+        session.add(
+            ResearchProjectModel(
+                id=project_id,
+                name="Monotonic progress",
+                config=asdict(ResearchConfig()),
+            )
+        )
+        session.commit()
+        jobs = ResearchJobRepository(session)
+        job = jobs.create(project_id)
+        jobs.update(job.id, ResearchJobStatus.DISCOVERING, 0.7)
+        repeated = jobs.update(job.id, ResearchJobStatus.DISCOVERING, 0.3)
+
+        assert repeated.progress == 0.7
     engine.dispose()
