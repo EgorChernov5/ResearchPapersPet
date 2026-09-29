@@ -10,6 +10,7 @@ from app.api.research import router as research_router
 from app.api.results import router as results_router
 from app.config import settings
 from app.infrastructure.database import Database
+from app.infrastructure.document_storage import create_document_storage
 from app.infrastructure.redis import RedisConnection
 
 
@@ -32,6 +33,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     config = settings()
     application.state.database = Database(config)
     application.state.redis = RedisConnection(config)
+    application.state.document_storage = create_document_storage(config)
     yield
 
     # Release connection pools during graceful shutdown.

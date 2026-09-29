@@ -21,8 +21,11 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://research:research@postgres:5432/research_graph
       REDIS_URL: redis://redis:6379/0
+      DOCUMENT_STORAGE_LOCAL_ROOT: /data/document-storage
     ports:
       - "8000:8000"
+    volumes:
+      - document_storage_data:/data/document-storage
     depends_on:
       postgres:
         condition: service_healthy
@@ -37,6 +40,9 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://research:research@postgres:5432/research_graph
       REDIS_URL: redis://redis:6379/0
+      DOCUMENT_STORAGE_LOCAL_ROOT: /data/document-storage
+    volumes:
+      - document_storage_data:/data/document-storage
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,5 +75,42 @@ services:
       timeout: 5s
       retries: 10
 
+  rustfs-volume-permission:
+    image: alpine:3.22
+    profiles: ["service-integration"]
+    command: sh -c "chown -R 10001:10001 /data"
+    volumes:
+      - rustfs_data:/data
+    restart: "no"
+
+  rustfs:
+    image: rustfs/rustfs:1.0.0
+    profiles: ["service-integration"]
+    security_opt:
+      - "no-new-privileges:true"
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_ACCESS_KEY: research
+      RUSTFS_SECRET_KEY: research-secret
+    ports:
+      - "59000:9000"
+      - "59001:9001"
+    volumes:
+      - rustfs_data:/data
+    depends_on:
+      rustfs-volume-permission:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
 volumes:
   postgres_data:
+  document_storage_data:
+  rustfs_data:
