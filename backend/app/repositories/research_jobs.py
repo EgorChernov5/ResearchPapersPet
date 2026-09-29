@@ -107,7 +107,8 @@ class ResearchJobRepository:
         if model is None:
             raise ValueError(f"Research job {job_id} was not found")
         model.status = status.value
-        model.progress = min(max(progress, 0.0), 1.0)
+        # Never move observable progress backwards when stages are retried or nested.
+        model.progress = max(model.progress, min(max(progress, 0.0), 1.0))
         if model.started_at is None and status != ResearchJobStatus.PENDING:
             model.started_at = datetime.now(UTC)
         if papers_discovered is not None:

@@ -5,22 +5,35 @@ from uuid import UUID
 
 from sqlalchemy.orm import sessionmaker
 
+from app.domain.document import DocumentSource
 from app.domain.research_job import ResearchJob, ResearchJobStatus
 from app.providers.base import ScholarlyProvider
 from app.repositories.citations import CitationRepository
+from app.repositories.documents import DocumentJobRepository
 from app.repositories.embeddings import EmbeddingRepository
 from app.repositories.papers import PaperRepository, ProjectPaperRepository
 from app.repositories.projects import ProjectRepository
 from app.repositories.research_jobs import ResearchJobRepository
 from app.repositories.semantic_scores import SemanticScoreRepository
+from app.research.balanced_selection import BalancedPaperSelector
 from app.research.deduplication import PaperDeduplicator
 from app.research.discovery import CitationDiscovery
 from app.research.embeddings import EmbeddingService
 from app.research.final_scoring import FinalRanker
 from app.research.graph_analysis import GraphAnalyzer
 from app.research.impact_ranking import ImpactRanker
+from app.research.preliminary_scoring import (
+    DiscoveryCandidateSelector,
+    PreliminaryScoringService,
+    PreliminarySemanticScorer,
+)
 from app.research.seed_resolution import SeedResolver
 from app.research.semantic_ranking import SemanticRanker
+from app.research.structures import (
+    PreliminaryCandidateScore,
+    PreliminaryQuestionShortlist,
+    PreliminaryScoringResult,
+)
 
 
 class ResearchPipeline:
@@ -105,14 +118,70 @@ class ResearchPipeline:
                     raise ValueError("Semantic Scholar returned no metadata for resolved seeds")
                 jobs.update(
                     job_id,
-                    ResearchJobStatus.DISCOVERING,
-                    0.35,
+                    ResearchJobStatus.EMBEDDING,
+                    0.20,
                     papers_discovered=len(seed_metadata),
                 )
                 session.commit()
 
-                # Expand both citation directions once and enforce project hard limits.
-                discovery = await CitationDiscovery(self.provider).discover(seed_metadata, config)
+                # Persist global seed metadata and create reusable vectors before traversal.
+                paper_repository = PaperRepository(session)
+                embedding_repository = EmbeddingRepository(session)
+                seed_entities = [paper_repository.upsert(paper) for paper in seed_metadata]
+                seed_embeddings = embedding_repository.get_many(
+                    {paper.id for paper in seed_entities},
+                    self.embedding_service.model_name,
+                    self.embedding_service.model_version,
+                    self.embedding_service.dimensions,
+                )
+                cached_seed_ids = {embedding.paper_id for embedding in seed_embeddings}
+                seed_embedding_batch = self.embedding_service.embed_papers(
+                    [paper for paper in seed_entities if paper.id not in cached_seed_ids]
+                )
+                embedding_failures = [
+                    f"seed paper {failure.entity_id}: {failure.reason}"
+                    for failure in seed_embedding_batch.failures
+                ]
+                for embedding in seed_embedding_batch.embeddings:
+                    embedding_repository.upsert(
+                        embedding,
+                        self.embedding_service.model_name,
+                        self.embedding_service.model_version,
+                        self.embedding_service.dimensions,
+                    )
+                seed_embeddings.extend(seed_embedding_batch.embeddings)
+                if not seed_embeddings:
+                    raise ValueError("No seed embeddings could be created or loaded")
+                session.commit()
+
+                # Build BFS frontiers through preliminary scoring and balanced selection.
+                questions = projects.get_questions(project_id)
+                if not questions:
+                    raise ValueError("Research project has no research questions")
+                jobs.update(
+                    job_id,
+                    ResearchJobStatus.DISCOVERING,
+                    0.30,
+                    papers_discovered=len(seed_metadata),
+                    papers_processed=len(seed_embeddings),
+                )
+                session.commit()
+                candidate_selector = DiscoveryCandidateSelector(
+                    paper_repository,
+                    PreliminaryScoringService(
+                        self.embedding_service,
+                        embedding_repository,
+                        PreliminarySemanticScorer(
+                            config.query_similarity_weight,
+                            config.seed_similarity_weight,
+                        ),
+                    ),
+                    BalancedPaperSelector(),
+                )
+                discovery = await CitationDiscovery(
+                    self.provider,
+                    candidate_selector,
+                ).discover(seed_metadata, questions, config)
                 jobs.update(
                     job_id,
                     ResearchJobStatus.DISCOVERING,
@@ -186,13 +255,9 @@ class ResearchPipeline:
                 )
                 session.commit()
                 project_paper_entities = projects.get_papers(project_id)
-                questions = projects.get_questions(project_id)
                 seed_paper_ids = projects.get_seed_paper_ids(project_id)
                 if not project_paper_entities:
                     raise ValueError("Research project has no persisted papers")
-                if not questions:
-                    raise ValueError("Research project has no research questions")
-
                 embedding_repository = EmbeddingRepository(session)
                 cached_embeddings = embedding_repository.get_many(
                     {paper.id for paper in project_paper_entities},
@@ -204,10 +269,10 @@ class ResearchPipeline:
                 paper_embedding_batch = self.embedding_service.embed_papers(
                     [paper for paper in project_paper_entities if paper.id not in cached_ids]
                 )
-                embedding_failures = [
+                embedding_failures.extend(
                     f"paper {failure.entity_id}: {failure.reason}"
                     for failure in paper_embedding_batch.failures
-                ]
+                )
                 persisted_embeddings = []
                 for embedding in paper_embedding_batch.embeddings:
                     try:
@@ -381,6 +446,45 @@ class ResearchPipeline:
                         )
                 if final_scores_persisted == 0:
                     raise ValueError("Graph and final ranking scores could not be persisted")
+
+                # Select all seeds plus a balanced per-question set of discovered PDF targets.
+                discovered_ids = project_paper_ids - seed_paper_ids
+                seed_similarities = {
+                    score.paper_id: score.seed_similarity for score in ranking.paper_scores
+                }
+                pdf_scoring = PreliminaryScoringResult(
+                    shortlists=[
+                        PreliminaryQuestionShortlist(
+                            question_id=question.id,
+                            candidates=[
+                                PreliminaryCandidateScore(
+                                    paper_id=score.paper_id,
+                                    question_id=score.question_id,
+                                    query_similarity=score.query_similarity,
+                                    seed_similarity=seed_similarities.get(score.paper_id),
+                                    preliminary_topic_score=score.topic_score,
+                                )
+                                for score in ranking.question_scores
+                                if score.question_id == question.id
+                                and score.paper_id in discovered_ids
+                            ],
+                        )
+                        for question in questions
+                    ]
+                )
+                selected_pdf_ids = (
+                    BalancedPaperSelector().select(pdf_scoring, config.pdf_top_n)
+                    if config.pdf_top_n > 0
+                    else []
+                )
+                document_jobs = DocumentJobRepository(session)
+                for paper_id in sorted(seed_paper_ids, key=str) + selected_pdf_ids:
+                    document_jobs.create_target(
+                        project_id,
+                        paper_id,
+                        job_id,
+                        DocumentSource.ARXIV,
+                    )
 
                 completed = jobs.update(
                     job_id,

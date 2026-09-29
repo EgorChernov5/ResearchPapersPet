@@ -9,6 +9,7 @@ from app.domain.research_job import ResearchJob, ResearchJobStatus
 from app.infrastructure.database import Base
 from app.infrastructure.models import (
     CitationModel,
+    DocumentProcessingJobModel,
     PaperEmbeddingModel,
     ProjectPaperModel,
     ProjectPaperQuestionScoreModel,
@@ -17,7 +18,7 @@ from app.infrastructure.models import (
     ResearchProjectModel,
     ResearchQuestionModel,
 )
-from app.providers.base import ScholarlyProvider
+from app.providers.base import ScholarlyProvider, ScholarlyProviderError
 from app.repositories.research_jobs import ResearchJobRepository
 from app.research.embeddings import EmbeddingService
 from app.research.pipeline import ResearchPipeline
@@ -89,15 +90,20 @@ async def test_pipeline_resolves_discovers_and_persists_depth_one() -> None:
     )
     reference = ProviderPaper("reference", "Reference", {}, year=2023, citation_count=50)
     citing = ProviderPaper("citing", "Citing", {}, year=2025, citation_count=20)
+    events = []
     provider = Mock(spec=ScholarlyProvider)
     provider.get_paper = AsyncMock(return_value=seed)
     provider.search_papers = AsyncMock(return_value=[])
     provider.get_papers_batch = AsyncMock(return_value=[seed])
-    provider.get_references = AsyncMock(return_value=[reference])
+    provider.get_references = AsyncMock(
+        side_effect=lambda *args, **kwargs: events.append("provider expansion") or [reference]
+    )
     provider.get_citations = AsyncMock(return_value=[citing])
     encoder = Mock()
-    encoder.get_sentence_embedding_dimension.return_value = 768
-    encoder.encode.side_effect = lambda texts, **kwargs: [[1.0] + [0.0] * 767 for _ in texts]
+    encoder.get_embedding_dimension.return_value = 768
+    encoder.encode.side_effect = lambda texts, **kwargs: (
+        events.append("embedding") or [[1.0] + [0.0] * 767 for _ in texts]
+    )
     embedding_service = EmbeddingService(
         model_name="fixture-model",
         model_version="1",
@@ -160,6 +166,9 @@ async def test_pipeline_resolves_discovers_and_persists_depth_one() -> None:
         assert result.status == ResearchJobStatus.COMPLETED
         assert session.get(ResearchJobModel, job_id).status == ResearchJobStatus.COMPLETED.value
         assert session.scalar(select(func.count()).select_from(ProjectPaperModel)) == 3
+        document_targets = session.scalars(select(DocumentProcessingJobModel)).all()
+        assert len(document_targets) == 3
+        assert all(target.status == "PENDING" for target in document_targets)
         assert session.scalar(select(func.count()).select_from(CitationModel)) == 2
         assert session.scalar(select(func.count()).select_from(PaperEmbeddingModel)) == 3
         assert session.scalar(select(func.count()).select_from(ProjectPaperQuestionScoreModel)) == 3
@@ -175,8 +184,10 @@ async def test_pipeline_resolves_discovers_and_persists_depth_one() -> None:
         assert all(row.graph_score is not None for row in ranking_rows)
         assert all(row.final_score is not None for row in ranking_rows)
         assert max(row.pagerank_score for row in ranking_rows) == pytest.approx(1.0)
+        assert events.index("embedding") < events.index("provider expansion")
         assert observed_statuses == [
             ResearchJobStatus.RESOLVING_SEEDS,
+            ResearchJobStatus.EMBEDDING,
             ResearchJobStatus.DISCOVERING,
             ResearchJobStatus.DISCOVERING,
             ResearchJobStatus.EMBEDDING,
@@ -316,11 +327,11 @@ async def test_pipeline_preserves_failed_state_after_embedding_failure() -> None
     provider.get_references = AsyncMock(return_value=[])
     provider.get_citations = AsyncMock(return_value=[])
     encoder = Mock()
-    encoder.get_sentence_embedding_dimension.return_value = 2
+    encoder.get_embedding_dimension.return_value = 2
     encoder.encode.side_effect = RuntimeError("embedding backend unavailable")
     embedding_service = EmbeddingService("fixture", "1", 2, 4, encoder)
 
-    with pytest.raises(ValueError, match="No paper embeddings could be created or loaded"):
+    with pytest.raises(ValueError, match="No seed embeddings could be created or loaded"):
         await ResearchPipeline(sessions, provider, embedding_service).run(project_id, job_id)
 
     with Session(engine) as session:
@@ -328,8 +339,118 @@ async def test_pipeline_preserves_failed_state_after_embedding_failure() -> None
         assert failed.status == ResearchJobStatus.FAILED.value
         assert failed.progress == 1.0
         assert failed.papers_discovered == 1
-        assert failed.papers_processed == 1
-        assert failed.error_message == "No paper embeddings could be created or loaded"
-        assert session.scalar(select(func.count()).select_from(ProjectPaperModel)) == 1
+        assert failed.papers_processed == 0
+        assert failed.error_message == "No seed embeddings could be created or loaded"
+        assert session.scalar(select(func.count()).select_from(ProjectPaperModel)) == 0
         assert session.scalar(select(func.count()).select_from(PaperEmbeddingModel)) == 0
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_persists_depth_two_idempotently() -> None:
+    """
+    Проверяет интеграцию traversal depth > 1 и повторный research job.
+
+    Returns:
+        None: Graph depth, papers, embeddings и edges остаются согласованными без duplicates.
+
+    Fallbacks:
+        Recorded provider boundary не подменяет результат pipeline или traversal.
+    """
+
+    # Persist one project and two jobs so the same traversal can be repeated.
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    project_id = uuid4()
+    first_job_id = uuid4()
+    second_job_id = uuid4()
+    with Session(engine) as session:
+        session.add(
+            ResearchProjectModel(
+                id=project_id,
+                name="Depth two research",
+                config=asdict(
+                    ResearchConfig(
+                        max_depth=2,
+                        max_papers=3,
+                        top_k_expansion=1,
+                        expand_references_topic_threshold=0.0,
+                    )
+                ),
+            )
+        )
+        session.add(
+            ResearchQuestionModel(
+                id=uuid4(),
+                project_id=project_id,
+                text="Which descendants remain relevant?",
+            )
+        )
+        session.add(
+            RelatedWorkEntryModel(
+                project_id=project_id,
+                local_id="RW01",
+                title="Seed Paper",
+                year=2024,
+                source="DOI:10.1000/depth-seed",
+            )
+        )
+        session.add_all(
+            [
+                ResearchJobModel(
+                    id=job_id,
+                    project_id=project_id,
+                    status=ResearchJobStatus.PENDING.value,
+                    progress=0.0,
+                    papers_discovered=0,
+                    papers_processed=0,
+                )
+                for job_id in [first_job_id, second_job_id]
+            ]
+        )
+        session.commit()
+
+    seed = ProviderPaper(
+        "depth-seed",
+        "Seed Paper",
+        {"doi": "10.1000/depth-seed"},
+        year=2024,
+    )
+    level_one = ProviderPaper("depth-one", "Level One", {}, year=2023)
+    level_two = ProviderPaper("depth-two", "Level Two", {}, year=2022)
+    provider = Mock(spec=ScholarlyProvider)
+    provider.get_paper = AsyncMock(return_value=seed)
+    provider.search_papers = AsyncMock(return_value=[])
+    provider.get_papers_batch = AsyncMock(return_value=[seed])
+    provider.get_references = AsyncMock(
+        side_effect=lambda paper_id, **kwargs: {
+            "depth-seed": [level_one],
+            "depth-one": [level_two],
+        }.get(paper_id, [])
+    )
+    provider.get_citations = AsyncMock(
+        side_effect=ScholarlyProviderError("Recorded citations branch failure")
+    )
+    encoder = Mock()
+    encoder.get_embedding_dimension.return_value = 768
+    encoder.encode.side_effect = lambda texts, **kwargs: [[1.0] + [0.0] * 767 for _ in texts]
+    embedding_service = EmbeddingService("fixture-model", "depth-two", 768, 4, encoder)
+
+    # Execute the same project twice through the real orchestration.
+    pipeline = ResearchPipeline(sessions, provider, embedding_service)
+    first = await pipeline.run(project_id, first_job_id)
+    second = await pipeline.run(project_id, second_job_id)
+
+    with Session(engine) as session:
+        assert first.status == second.status == ResearchJobStatus.COMPLETED
+        assert session.scalar(select(func.count()).select_from(ProjectPaperModel)) == 3
+        assert session.scalar(select(func.count()).select_from(DocumentProcessingJobModel)) == 3
+        assert session.scalar(select(func.count()).select_from(CitationModel)) == 2
+        assert session.scalar(select(func.count()).select_from(PaperEmbeddingModel)) == 3
+        assert sorted(session.scalars(select(ProjectPaperModel.depth)).all()) == [0, 1, 2]
+        jobs = session.scalars(
+            select(ResearchJobModel).where(ResearchJobModel.id.in_([first_job_id, second_job_id]))
+        ).all()
+        assert all(job.progress == 1.0 for job in jobs)
     engine.dispose()
